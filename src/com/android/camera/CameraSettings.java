@@ -407,8 +407,6 @@ public class CameraSettings {
         ListPreference slowShutter = group.findPreference(KEY_SLOW_SHUTTER);
         ListPreference asd = group.findPreference(KEY_ASD);
 
- ListPreference pvSt = group.findPreference(KEY_PHOTOVIDEO_STORAGE);
-
         // Since the screen could be loaded from different resources, we need
         // to check if the preference is available here
         if (videoQuality != null) {
@@ -474,9 +472,6 @@ public class CameraSettings {
         }
         if (asd != null && !CameraUtil.isAutoSceneDetectionSupported(mParameters)) {
             removePreference(group, asd.getKey());
-        }
-    if (isFrontCamera&&pvSt != null) {
-  removePreference(group, pvSt.getKey());          
         }
         qcomInitPreferences(group);
     }
