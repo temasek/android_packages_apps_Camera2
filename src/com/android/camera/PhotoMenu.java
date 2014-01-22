@@ -327,7 +327,6 @@ public class PhotoMenu extends PieController
             setPreference(CameraSettings.KEY_BEAUTY_MODE, mSettingOff);
            } else if(pref.getKey().equals(CameraSettings.KEY_PHOTOVIDEO_STORAGE)){
             com.android.camera.app.CameraApp.reload();
-}
         super.onSettingChanged(pref);
     }
 
