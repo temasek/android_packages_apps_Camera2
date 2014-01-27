@@ -425,6 +425,8 @@ public class VideoModule implements CameraModule,
 
         mPreferences.setLocalId(mActivity, mCameraId);
         CameraSettings.upgradeLocalPreferences(mPreferences.getLocal());
+        // we need to reset exposure for the preview
+        resetExposureCompensation();
 
         mOrientationManager = new OrientationManager(mActivity);
 
@@ -869,6 +871,16 @@ public class VideoModule implements CameraModule,
                 ". mDesiredPreviewHeight=" + mDesiredPreviewHeight);
     }
 
+    private void resetExposureCompensation() {
+        String value = mPreferences.getString(CameraSettings.KEY_EXPOSURE,
+                CameraSettings.EXPOSURE_DEFAULT_VALUE);
+        if (!CameraSettings.EXPOSURE_DEFAULT_VALUE.equals(value)) {
+            Editor editor = mPreferences.edit();
+            editor.putString(CameraSettings.KEY_EXPOSURE, "0");
+            editor.apply();
+        }
+    }
+
     void setPreviewFrameLayoutCameraOrientation(){
         CameraInfo info = CameraHolder.instance().getCameraInfo()[mCameraId];
 
@@ -906,6 +918,7 @@ public class VideoModule implements CameraModule,
     public void onResumeAfterSuper() {
         mUI.enableShutter(false);
         mZoomValue = 0;
+        resetExposureCompensation();
 
         showVideoSnapshotUI(false);
 
@@ -1149,6 +1162,12 @@ public class VideoModule implements CameraModule,
         }
 
         switch (keyCode) {
+            case KeyEvent.KEYCODE_VOLUME_UP:
+                mUI.onScaleStepResize(true);
+                return true;
+            case KeyEvent.KEYCODE_VOLUME_DOWN:
+                mUI.onScaleStepResize(false);
+                return true;
             case KeyEvent.KEYCODE_CAMERA:
                 if (event.getRepeatCount() == 0) {
                     mUI.clickShutter();
@@ -1171,6 +1190,9 @@ public class VideoModule implements CameraModule,
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
         switch (keyCode) {
+            case KeyEvent.KEYCODE_VOLUME_UP:
+            case KeyEvent.KEYCODE_VOLUME_DOWN:
+                return true;
             case KeyEvent.KEYCODE_CAMERA:
                 mUI.pressShutter(false);
                 return true;
@@ -1837,7 +1859,7 @@ public class VideoModule implements CameraModule,
         // add QCOM Parameters here
         // Set color effect parameter.
         String colorEffect = mPreferences.getString(
-            CameraSettings.KEY_COLOR_EFFECT,
+            CameraSettings.KEY_VIDEOCAMERA_COLOR_EFFECT,
             mActivity.getString(R.string.pref_camera_coloreffect_default));
         Log.v(TAG, "Color effect value =" + colorEffect);
         if (isSupported(colorEffect, mParameters.getSupportedColorEffects())) {
@@ -1971,6 +1993,15 @@ public class VideoModule implements CameraModule,
         Log.e(TAG,"Video dimension in App->"+recordSize);
         if (CameraUtil.isSupported(mParameters, "video-size")) {
             mParameters.set("video-size", recordSize);
+        }
+        // Set exposure compensation
+        int value = CameraSettings.readExposure(mPreferences);
+        int max = mParameters.getMaxExposureCompensation();
+        int min = mParameters.getMinExposureCompensation();
+        if (value >= min && value <= max) {
+            mParameters.setExposureCompensation(value);
+        } else {
+            Log.w(TAG, "invalid exposure range: " + value);
         }
         // Set white balance parameter.
         String whiteBalance = mPreferences.getString(
