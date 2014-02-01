@@ -292,6 +292,10 @@ public class PhotoModule
 
     private PreferenceGroup mPreferenceGroup;
 
+    // Burst mode
+    private int mBurstShotsDone = 0;
+    private boolean mBurstShotInProgress = false;
+
     private boolean mQuickCapture;
 
     private boolean mSceneDetection = false;
@@ -1113,7 +1117,9 @@ public class PhotoModule
                     }
                 }
                 // Animate capture with real jpeg data instead of a preview frame.
-                mUI.animateCapture(jpegData, orientation, mMirror);
+                if (!mBurstShotInProgress) {
+                    mUI.animateCapture(jpegData, orientation, mMirror);
+                }
             } else {
                 mJpegImageData = jpegData;
                 if (!mQuickCapture) {
@@ -1152,6 +1158,9 @@ public class PhotoModule
                 cancelAutoFocus();
             }
 
+            if (mSnapshotOnIdle && mBurstShotsDone > 0) {
+                mHandler.post(mDoSnapRunnable);
+            }
         }
     }
 
@@ -1262,7 +1271,7 @@ public class PhotoModule
         // Only animate when in full screen capture mode
         // i.e. If monkey/a user swipes to the gallery during picture taking,
         // don't show animation
-        if (!mIsImageCaptureIntent) {
+        if (!mIsImageCaptureIntent && !mBurstShotInProgress) {
             mUI.animateFlash();
         }
     }
@@ -1592,6 +1601,9 @@ public class PhotoModule
 
     @Override
     public void onShutterButtonClick() {
+        int nbBurstShots =
+                Integer.valueOf(mPreferences.getString(CameraSettings.KEY_BURST_MODE, "1"));
+
         if (mPaused || mUI.collapseCameraControls()
                 || (mCameraState == SWITCHING_CAMERA)
                 || (mCameraState == PREVIEW_STOPPED)) return;
@@ -1643,8 +1655,18 @@ public class PhotoModule
         if (seconds > 0) {
             mUI.startCountDown(seconds, playSound);
         } else {
-            mSnapshotOnIdle = false;
             mFocusManager.doSnap();
+            mBurstShotsDone++;
+
+            if (mBurstShotsDone == nbBurstShots) {
+                mBurstShotsDone = 0;
+                mBurstShotInProgress = false;
+                mSnapshotOnIdle = false;
+            } else if (mSnapshotOnIdle == false) {
+                // queue a new shot until we done all our shots
+                mSnapshotOnIdle = true;
+                mBurstShotInProgress = true;
+            }
         }
     }
 
@@ -2060,7 +2082,7 @@ public class PhotoModule
         mFocusManager.onPreviewStarted();
         onPreviewStarted();
 
-        if (mSnapshotOnIdle) {
+        if (mSnapshotOnIdle && mBurstShotsDone > 0) {
             mHandler.post(mDoSnapRunnable);
         }
     }
