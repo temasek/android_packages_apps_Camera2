@@ -45,10 +45,14 @@ import android.nfc.NfcEvent;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Message;
+import android.os.storage.StorageEventListener;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.text.TextUtils;
@@ -74,6 +78,7 @@ import com.android.camera.app.CameraAppUI;
 import com.android.camera.app.CameraController;
 import com.android.camera.app.CameraProvider;
 import com.android.camera.app.CameraServices;
+import com.android.camera.app.DevicePluginImpl;
 import com.android.camera.app.LocationManager;
 import com.android.camera.app.MemoryManager;
 import com.android.camera.app.MemoryQuery;
@@ -167,6 +172,8 @@ public class CameraActivity extends QuickActivity
             "android.media.action.STILL_IMAGE_CAMERA_SECURE";
     public static final String ACTION_IMAGE_CAPTURE_SECURE =
             "android.media.action.IMAGE_CAPTURE_SECURE";
+    public static final String INTENT_GALLERY3D_STORAGE_CHANGE =
+            "com.android.gallery3d.STORAGE_CHANGE";
 
     // The intent extra for camera from secure lock screen. True if the gallery
     // should only show newly captured pictures. sSecureAlbumId does not
@@ -210,6 +217,7 @@ public class CameraActivity extends QuickActivity
     private int mCurrentModeIndex;
     private CameraModule mCurrentModule;
     private ModuleManagerImpl mModuleManager;
+    private DevicePluginImpl mDevicePlugin;
     private FrameLayout mAboveFilmstripControlLayout;
     private FilmstripController mFilmstripController;
     private boolean mFilmstripVisible;
@@ -219,6 +227,8 @@ public class CameraActivity extends QuickActivity
     private Intent mResultDataForTesting;
     private OnScreenHint mStorageHint;
     private final Object mStorageSpaceLock = new Object();
+    private String mStoragePath;
+    private StorageManager mStorageManager;
     private long mStorageSpaceBytes = Storage.LOW_STORAGE_THRESHOLD_BYTES;
     private boolean mAutoRotateScreen;
     private boolean mSecureCamera;
@@ -529,6 +539,7 @@ public class CameraActivity extends QuickActivity
         }
         Log.v(TAG, "invoking onChangeCamera");
         mCameraAppUI.onChangeCamera();
+        mDevicePlugin.onCameraOpened(camera);
     }
 
     private void resetExposureCompensationToDefault(CameraAgent.CameraProxy camera) {
@@ -577,6 +588,10 @@ public class CameraActivity extends QuickActivity
             initPowerShutter();
         } else if (key.equals(Keys.KEY_MAX_BRIGHTNESS)) {
             initMaxBrightness();
+        } else if (key.equals(Keys.KEY_STORAGE)) {
+            if (setStoragePath()) {
+                updateStorageSpaceAndHint(null);
+            }
         }
     }
 
@@ -1409,6 +1424,9 @@ public class CameraActivity extends QuickActivity
         GcamHelper.init(getContentResolver());
         ModulesInfo.setupModules(mAppContext, mModuleManager);
 
+        mDevicePlugin = new DevicePluginImpl();
+        mDevicePlugin.onCreate(mAppContext);
+
         mSettingsManager = getServices().getSettingsManager();
         mSettingsManager.addListener(this);
         initPowerShutter();
@@ -1523,14 +1541,6 @@ public class CameraActivity extends QuickActivity
 
         if (!mSecureCamera) {
             mFilmstripController.setDataAdapter(mDataAdapter);
-            if (!isCaptureIntent()) {
-                mDataAdapter.requestLoad(new Callback<Void>() {
-                    @Override
-                    public void onCallback(Void result) {
-                        fillTemporarySessions();
-                    }
-                });
-            }
         } else {
             // Put a lock placeholder as the last image by setting its date to
             // 0.
@@ -1583,6 +1593,8 @@ public class CameraActivity extends QuickActivity
             }
         });
         mMotionManager = getServices().getMotionManager();
+
+        syncStorageSettings();
     }
 
     /**
@@ -1749,6 +1761,8 @@ public class CameraActivity extends QuickActivity
         Log.v(TAG, "Build info: " + Build.DISPLAY);
 
         mPaused = false;
+
+        setStoragePath();
         updateStorageSpaceAndHint(null);
 
         mLastLayoutOrientation = getResources().getConfiguration().orientation;
@@ -1936,6 +1950,9 @@ public class CameraActivity extends QuickActivity
         if (mSecureCamera) {
             unregisterReceiver(mShutdownReceiver);
         }
+        if (mStorageManager != null) {
+            mStorageManager.unregisterListener(mStorageEventListener);
+        }
         mSettingsManager.removeAllListeners();
         mCameraController.removeCallbackReceiver();
         mCameraController.setCameraExceptionHandler(null);
@@ -1943,6 +1960,7 @@ public class CameraActivity extends QuickActivity
         getContentResolver().unregisterContentObserver(mLocalVideosObserver);
         getServices().getCaptureSessionManager().removeSessionListener(mSessionListener);
         mCameraAppUI.onDestroy();
+        mDevicePlugin.onDestroy();
         mModeListView.setVisibilityChangedListener(null);
         mCameraController = null;
         mSettingsManager = null;
@@ -2908,4 +2926,80 @@ public class CameraActivity extends QuickActivity
         boolean showDetails = (type == LocalData.LOCAL_IMAGE) || (type == LocalData.LOCAL_VIDEO);
         detailsMenuItem.setVisible(showDetails);
     }
+
+    protected boolean setStoragePath() {
+        String storagePath = mSettingsManager.getString(SettingsManager.SCOPE_GLOBAL,
+                Keys.KEY_STORAGE);
+        Storage.setRoot(storagePath);
+        if (storagePath.equals(mStoragePath)) {
+            return false;
+        }
+        mStoragePath = storagePath;
+
+        // Sync the swipe preview with the right path
+        if (mDataAdapter != null) {
+            mDataAdapter.flush();
+            if (!mSecureCamera) {
+                mDataAdapter.requestLoad(new Callback<Void>() {
+                    @Override
+                    public void onCallback(Void result) {
+                        fillTemporarySessions();
+                    }
+                });
+            }
+        }
+
+        // Update the gallery app
+        Intent intent = new Intent(INTENT_GALLERY3D_STORAGE_CHANGE);
+        intent.putExtra(Keys.KEY_STORAGE, mStoragePath);
+        sendBroadcast(intent);
+        return true;
+    }
+
+    protected void syncStorageSettings() {
+        if (mStorageManager == null) {
+            mStorageManager = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
+            mStorageManager.registerListener(mStorageEventListener);
+        }
+        StorageVolume[] volumes = mStorageManager.getVolumeList();
+        List<String> values = new ArrayList<String>(volumes.length);
+        List<StorageVolume> mountedVolumes = new ArrayList<StorageVolume>(volumes.length);
+
+        // Find all mounted volumes
+        String defaultValue = Environment.getExternalStorageDirectory().toString();
+        for (int i = 0; i < volumes.length; i++) {
+            StorageVolume v = volumes[i];
+            if (mStorageManager.getVolumeState(v.getPath()).equals(Environment.MEDIA_MOUNTED)) {
+                values.add(v.getPath());
+                mountedVolumes.add(v);
+                if (v.isPrimary()) {
+                    defaultValue = v.getPath();
+                }
+            }
+        }
+        SettingsUtil.setMountedStorageVolumes(mountedVolumes);
+
+        mSettingsManager.setDefaults(Keys.KEY_STORAGE, defaultValue,
+                values.toArray(new String[values.size()]));
+
+        // Check if current volume is mounted. If not, restore the default storage path.
+        try {
+            mSettingsManager.getIndexOfCurrentValue(SettingsManager.SCOPE_GLOBAL,
+                    Keys.KEY_STORAGE);
+        } catch (IllegalStateException e) {
+            mSettingsManager.setToDefault(SettingsManager.SCOPE_GLOBAL, Keys.KEY_STORAGE);
+        }
+
+        if (setStoragePath()) {
+            updateStorageSpaceAndHint(null);
+        }
+    }
+
+    private StorageEventListener mStorageEventListener = new StorageEventListener () {
+        @Override
+        public void onStorageStateChanged(String path, String oldState, String newState) {
+            Log.v(TAG, "onStorageStateChanged: " + path + "(" + oldState + "->" + newState + ")");
+            syncStorageSettings();
+        }
+    };
 }
